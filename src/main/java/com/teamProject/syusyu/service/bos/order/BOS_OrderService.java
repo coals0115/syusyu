@@ -11,4 +11,10 @@ public interface BOS_OrderService {
     void dispatchOrder(List<Integer> ordDtlNoList, List<String> dlvComList, List<String> trckNoList, int mbrId, String ordStus) throws Exception;
 
     Map<String, Object> getOrdDtlInfo(int ordDtlNo) throws Exception;
+    
+    // 새로운 기능: 주문 취소
+    void cancelOrder(List<Integer> ordDtlNoList, int mbrId, String cancelReason) throws Exception;
+    
+    // 새로운 기능: 취소된 주문 목록 조회
+    Map<String, Object> getCanceledOrderList(OrderSearchRequestDTO orderSearchRequestDTO) throws Exception;
 }

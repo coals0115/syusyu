@@ -137,4 +137,59 @@ public class BOS_OrderServiceImpl extends OrderServiceBase implements BOS_OrderS
         return result;
 
     }
+
+    /**
+     * 주문을 취소 처리한다.
+     * 주문상태를 주문취소(90)로 변경하고 취소 사유를 포함한 주문상태이력을 추가한다.
+     *
+     * @param ordDtlNoList 취소처리할 주문의 주문상세번호를 담은 리스트
+     * @param mbrId        사용자 ID
+     * @param cancelReason 주문 취소 사유
+     * @throws Exception 주문 취소 처리 도중 발생할 수 있는 예외
+     * @author min
+     * @since 2024/03/21
+     */
+    @Override
+    public void cancelOrder(List<Integer> ordDtlNoList, int mbrId, String cancelReason) throws Exception {
+        // 주문상태를 취소(90)로 업데이트
+        for (Integer ordDtlNo : ordDtlNoList) {
+            // 1. 주문 상태를 취소로 업데이트
+            orderInfoDAO.updateOrdStus(ordDtlNo, "90", mbrId);
+            
+            // 2. 주문상태이력에 취소 사유와 함께 기록
+            ordStusHistDAO.insertOrdStusHist(OrdStusHistDTO.Builder.anOrdStusHistDTO()
+                    .ordDtlNo(ordDtlNo)
+                    .ordStus("90")
+                    .regId(mbrId)
+                    .ordStusNote("주문취소 - " + cancelReason)
+                    .build());
+        }
+    }
+
+    /**
+     * 취소된 주문 목록을 조회한다.
+     *
+     * @param orderSearchRequestDTO 조회 조건을 담고 있는 OrderSearchRequestDTO 객체
+     * @return 취소된 주문 리스트와 관련 정보를 담은 Map 객체
+     * @throws Exception DB 조회 도중 발생할 수 있는 예외
+     * @author min
+     * @since 2024/03/21
+     */
+    @Override
+    public Map<String, Object> getCanceledOrderList(OrderSearchRequestDTO orderSearchRequestDTO) throws Exception {
+        // 취소된 주문만 조회하도록 주문상태를 90으로 설정
+        orderSearchRequestDTO.setOrdStus("90");
+        
+        // 취소된 주문 리스트 조회
+        List<OrderInfoDTO> canceledOrderList = orderInfoDAO.selectBosOrderList(orderSearchRequestDTO);
+        
+        // 취소된 주문 건수 조회
+        int canceledOrderCount = orderInfoDAO.countCanceledOrders();
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("canceledOrderList", canceledOrderList);
+        result.put("canceledOrderCount", canceledOrderCount);
+
+        return result;
+    }
 }
