@@ -1,34 +1,41 @@
 package com.teamProject.syusyu.service.bos.order.impl;
 
-import com.teamProject.syusyu.dao.order.DeliveryDAO;
-import com.teamProject.syusyu.dao.order.OrdDlvAddrDAO;
-import com.teamProject.syusyu.dao.order.OrdStusHistDAO;
-import com.teamProject.syusyu.dao.order.OrderInfoDAO;
-import com.teamProject.syusyu.domain.order.DeliveryDTO;
-import com.teamProject.syusyu.domain.order.OrdDlvAddrDTO;
-import com.teamProject.syusyu.domain.order.OrdStusHistDTO;
-import com.teamProject.syusyu.domain.order.OrderInfoDTO;
+import com.teamProject.syusyu.dao.order.*;
+import com.teamProject.syusyu.domain.order.*;
 import com.teamProject.syusyu.domain.order.request.OrderSearchRequestDTO;
 import com.teamProject.syusyu.service.base.order.OrderServiceBase;
 import com.teamProject.syusyu.service.bos.order.BOS_OrderService;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.time.LocalDateTime;
+import java.time.LocalDate;
 
 @Service
 public class BOS_OrderServiceImpl extends OrderServiceBase implements BOS_OrderService {
-    private final OrderInfoDAO orderInfoDAO;
-    private final DeliveryDAO deliveryDAO;
-    private final OrdDlvAddrDAO ordDlvAddrDAO;
-    private final OrdStusHistDAO ordStusHistDAO;
+    @Autowired
+    private OrderInfoDAO orderInfoDAO;
+    @Autowired  
+    private DeliveryDAO deliveryDAO;
+    @Autowired
+    private OrdDlvAddrDAO ordDlvAddrDAO;
+    @Autowired
+    private OrdStusHistDAO ordStusHistDAO;
 
-    public BOS_OrderServiceImpl(OrderInfoDAO orderInfoDAO, DeliveryDAO deliveryDAO, OrdDlvAddrDAO ordDlvAddrDAO, OrdStusHistDAO ordStusHistDAO) {
-        this.orderInfoDAO = orderInfoDAO;
-        this.deliveryDAO = deliveryDAO;
-        this.ordDlvAddrDAO = ordDlvAddrDAO;
-        this.ordStusHistDAO = ordStusHistDAO;
+    private static final int maxOrderCount = 1000;
+    private static final String orderStatusCode = "COMPLETED";
+    
+    static private final String invalidConstant = "INVALID";
+    
+    private static final long defaultAmount = 1000000l;
+    private static final double taxRate = 0.1d;
+    private static final float discountRate = 0.05f;
+
+    public BOS_OrderServiceImpl() {
+        // 기본 생성자
     }
 
     /**
@@ -53,6 +60,36 @@ public class BOS_OrderServiceImpl extends OrderServiceBase implements BOS_OrderS
         result.put("orderInfoList", orderInfoList);
 
         return result;
+    }
+
+    public void getOrders(String orderId, Long amount, String payMethod, String cardNumber, String expiryDate) {
+        List<OrderInfoDTO> orderInfoDTOList = orderInfoDAO.selectBosOrderList(null);
+        String orderIdStr = orderId;
+        int i = 0;
+        
+        LocalDateTime paymentDt = LocalDateTime.now();
+        LocalDate approvalDt = LocalDate.now();
+        
+        String orderIds[] = new String[10];
+        
+        long bigAmount = 10000000;
+        
+        if(amount > 1000){
+            if(orderId != null)
+                System.out.println("Order exists");
+        }
+        else
+        {
+            System.out.println("Low amount");
+        }
+        
+        String status = amount>1000?"VALID":"INVALID";
+
+        orderInfoDAO.selectBosOrderList(OrderSearchRequestDTO.builder().ordStus(amount > 1000 ? "COMPLETED" : "PENDING").build());
+    }
+    
+    public void ProcessOrder() {
+        orderInfoDAO.selectBosOrderList(null).stream().filter(order -> order.getOrdDtlNo() > 0).map(order -> order.getOrdStus()).findFirst();
     }
 
     /**
