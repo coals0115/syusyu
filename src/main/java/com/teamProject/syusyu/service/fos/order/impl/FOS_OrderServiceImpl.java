@@ -9,15 +9,25 @@ import com.teamProject.syusyu.domain.member.DlvAddrDTO;
 import com.teamProject.syusyu.domain.member.MemberDTO;
 import com.teamProject.syusyu.domain.order.*;
 import com.teamProject.syusyu.domain.product.ProdOptDTO;
+import com.teamProject.syusyu.domain.promotion.PromotionInfo;
+import com.teamProject.syusyu.domain.promotion.PromotionTargetDto;
+import com.teamProject.syusyu.domain.promotion.PromotionEventPayload;
+import com.teamProject.syusyu.domain.promotion.PromotionEventDto;
 import com.teamProject.syusyu.service.base.order.OrderServiceBase;
 import com.teamProject.syusyu.service.fos.order.FOS_OrderService;
+import com.teamProject.syusyu.service.promotion.PromotionBusinessService;
+import com.teamProject.syusyu.service.promotion.RedisPromotionService;
+import com.teamProject.syusyu.config.properties.PromotionProperties;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.retry.annotation.Backoff;
 import org.springframework.retry.annotation.Retryable;
-import org.springframework.retry.support.RetrySynchronizationManager;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.context.ApplicationEventPublisher;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.sql.SQLException;
 import java.util.HashMap;
@@ -28,6 +38,9 @@ import java.util.stream.Collectors;
 
 @Service
 public class FOS_OrderServiceImpl extends OrderServiceBase implements FOS_OrderService {
+    
+    private static final Logger log = LoggerFactory.getLogger(FOS_OrderServiceImpl.class);
+    
     private final MemberDao memberDao;
     private final DlvAddrDAO dlvAddrDAO;
     private final CartProdDAO cartProdDAO;
@@ -40,9 +53,16 @@ public class FOS_OrderServiceImpl extends OrderServiceBase implements FOS_OrderS
     private final OrderInfoDAO orderInfoDAO;
     private final OrdClaimDAO ordClaimDAO;
     private final ProdOptDAO prodOptDAO;
+    
+    // 프로모션 관련 추가
+    private final PromotionBusinessService promotionBusinessService;
+    private final RedisPromotionService redisPromotionService;
+    private final PromotionProperties promotionProperties;
+    private final ApplicationEventPublisher eventPublisher;
+    private final ObjectMapper objectMapper;
 
     @Autowired
-    public FOS_OrderServiceImpl(MemberDao memberDao, DlvAddrDAO dlvAddrDAO, CartProdDAO cartProdDAO, OrdDAO ordDAO, OrdDtlDAO ordDtlDAO, OrdStusHistDAO ordStusHistDAO, PayDAO payDAO, PayRsltDAO payRsltDAO, OrdDlvAddrDAO ordDlvAddrDAO, OrderInfoDAO orderInfoDAO, OrdClaimDAO ordClaimDAO, ProdOptDAO prodOptDAO) {
+    public FOS_OrderServiceImpl(MemberDao memberDao, DlvAddrDAO dlvAddrDAO, CartProdDAO cartProdDAO, OrdDAO ordDAO, OrdDtlDAO ordDtlDAO, OrdStusHistDAO ordStusHistDAO, PayDAO payDAO, PayRsltDAO payRsltDAO, OrdDlvAddrDAO ordDlvAddrDAO, OrderInfoDAO orderInfoDAO, OrdClaimDAO ordClaimDAO, ProdOptDAO prodOptDAO, PromotionBusinessService promotionBusinessService, RedisPromotionService redisPromotionService, PromotionProperties promotionProperties, ApplicationEventPublisher eventPublisher, ObjectMapper objectMapper) {
         this.memberDao = memberDao;
         this.dlvAddrDAO = dlvAddrDAO;
         this.cartProdDAO = cartProdDAO;
@@ -55,6 +75,11 @@ public class FOS_OrderServiceImpl extends OrderServiceBase implements FOS_OrderS
         this.orderInfoDAO = orderInfoDAO;
         this.ordClaimDAO = ordClaimDAO;
         this.prodOptDAO = prodOptDAO;
+        this.promotionBusinessService = promotionBusinessService;
+        this.redisPromotionService = redisPromotionService;
+        this.promotionProperties = promotionProperties;
+        this.eventPublisher = eventPublisher;
+        this.objectMapper = objectMapper;
     }
 
     /**
@@ -158,8 +183,98 @@ public class FOS_OrderServiceImpl extends OrderServiceBase implements FOS_OrderS
 
         // 5. 주문배송지 정보를 DB에 삽입한다.
         addDeliveryAddressForOrder(order.getOrdDlvAddr(), order.getOrd().getOrdNo());
+
+        Map<String, PromotionInfo> promotionResult = checkFirstPaymentPromotion(order);
     }
 
+    /**
+     * 첫결제 프로모션 체크 및 적용
+     */
+    private Map<String, PromotionInfo> checkFirstPaymentPromotion(OrderReserveDto reserveDto) {
+        // 첫 결제 프로모션은 부가 기능이기 때문에 이 로직의 예외로 인해 머니 사용 flow에 영향 주지 않도록 try-catch로 격리
+        try {
+            if (!isFirstPaymentPromotionValid(reserveDto)) {
+                return createFirstPaymentPromotionResult(false);
+            }
+
+            MemberDTO customer = memberDao.selectUserInfo(reserveDto.getCustomerUid());
+
+            return promotionBusinessService.getPromotionTargetData(promotionProperties.getFirstPayment().getCode(), customer.getLginId())
+                .map(promotionTarget -> processPromotionTarget(reserveDto, promotionTarget))
+                .orElseGet(() -> {
+                    log.error("프로모션 대상 정보를 찾을 수 없음 promotionCode={}, customerUid={}", promotionProperties.getFirstPayment().getCode(), customer.getMbrId());
+                    return createFirstPaymentPromotionResult(false);
+                });
+        } catch (Exception e) {
+            log.error("첫 결제 프로모션 처리 중 예외 발생: reserveDto={}, error={}", reserveDto, e.getMessage(), e);
+            return createFirstPaymentPromotionResult(false);
+        }
+    }
+
+    private Map<String, PromotionInfo> processPromotionTarget(OrderReserveDto reserveDto, PromotionTargetDto promotionTarget) {
+        if (promotionTarget.isNotTarget()) {
+            return createFirstPaymentPromotionResult(false);
+        }
+
+        // 첫 결제 프로모션 사용 캐시 반영 => 이벤트 발행
+        redisPromotionService.usePromotion(promotionTarget);
+        publishPromotionEvent(reserveDto.getCustomerUid(), reserveDto.getOrderKey(), promotionTarget, false);
+
+        return createFirstPaymentPromotionResult(true);
+    }
+
+    private Map<String, PromotionInfo> createFirstPaymentPromotionResult(boolean isApplied) {
+        Map<String, PromotionInfo> promotionInfoMap = new HashMap<>();
+        promotionInfoMap.put(promotionProperties.getFirstPayment().getCode(), new PromotionInfo(promotionProperties.getFirstPayment().getName(), isApplied));
+
+        return promotionInfoMap;
+    }
+
+    private void publishPromotionEvent(final long customerUid, final String orderKey, final PromotionTargetDto promotionTarget, final boolean isTarget) {
+        if (orderKey.isEmpty() || promotionTarget == null || promotionTarget.promotionCode().isEmpty() || promotionTarget.hashCi().isEmpty()) {
+            log.error("publishOrderPromotionEvent 발행 실패. orderKey: {}, promotionTarget: {} is null", orderKey, promotionTarget);
+            return;
+        }
+
+        PromotionEventPayload payload = PromotionEventPayload.builder()
+            .promotionCode(promotionTarget.promotionCode())
+            .hashCi(promotionTarget.hashCi())
+            .isTarget(isTarget).build();
+
+        PromotionEventDto eventDto = PromotionEventDto.builder()
+            .source(this)
+            .customerUid(customerUid)
+            .orderKey(orderKey)
+            .payload(payload)
+            .build();
+
+        try {
+            // TODO: outboxBusinessService 구현 필요
+            eventPublisher.publishEvent(eventDto);
+        }catch (Exception e) {
+            log.error("failed to save the outbox table for order promotion.", e);
+        }
+    }
+
+    private boolean isFirstPaymentPromotionValid(OrderReserveDto reserveDto) {
+        if (reserveDto.getMerchantCode().isEmpty()) {
+            log.error("merchantCode is null. reserveDto={}", reserveDto);
+            return false;
+        }
+
+        return promotionProperties.isFirstPaymentPromotionValid(reserveDto.getMerchantCode(), reserveDto.getMerchantBrandCode());
+    }
+    
+    private OrderReserveDto createOrderReserveDto(Order order) {
+        return new OrderReserveDto(
+            order.getOrd().getOrdrId(),
+            String.valueOf(order.getOrd().getOrdNo()),
+            "DEFAULT_MERCHANT", // TODO: 실제 머천트 코드로 변경
+            "DEFAULT_BRAND"     // TODO: 실제 브랜드 코드로 변경
+        );
+    }
+
+    // 기존 메서드들 유지...
     @Override
     public void decreaseProdQty(List<OrdDtlDTO> ordDtlList) throws Exception {
         // 0. 재고가 있는지 검증한다.
@@ -466,5 +581,25 @@ public class FOS_OrderServiceImpl extends OrderServiceBase implements FOS_OrderS
         paramMap.put("updrId", mbrId);
 
         return paramMap;
+    }
+    
+    // 내부 클래스 및 헬퍼 클래스들
+    private static class OrderReserveDto {
+        private final long customerUid;
+        private final String orderKey;
+        private final String merchantCode;
+        private final String merchantBrandCode;
+        
+        public OrderReserveDto(long customerUid, String orderKey, String merchantCode, String merchantBrandCode) {
+            this.customerUid = customerUid;
+            this.orderKey = orderKey;
+            this.merchantCode = merchantCode;
+            this.merchantBrandCode = merchantBrandCode;
+        }
+        
+        public long getCustomerUid() { return customerUid; }
+        public String getOrderKey() { return orderKey; }
+        public String getMerchantCode() { return merchantCode; }
+        public String getMerchantBrandCode() { return merchantBrandCode; }
     }
 }
