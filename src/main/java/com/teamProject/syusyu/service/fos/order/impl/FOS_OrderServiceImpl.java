@@ -218,7 +218,7 @@ public class FOS_OrderServiceImpl extends OrderServiceBase implements FOS_OrderS
 
         // 첫 결제 프로모션 사용 캐시 반영 => 이벤트 발행
         redisPromotionService.usePromotion(promotionTarget);
-        publishMoneyPromotionEvent(reserveDto.getCustomerUid(), reserveDto.getMoneyKey(), promotionTarget, false);
+        publishPromotionEvent(reserveDto.getCustomerUid(), reserveDto.getOrderKey(), promotionTarget, false);
 
         return createFirstPaymentPromotionResult(true);
     }
@@ -230,9 +230,9 @@ public class FOS_OrderServiceImpl extends OrderServiceBase implements FOS_OrderS
         return promotionInfoMap;
     }
 
-    private void publishMoneyPromotionEvent(final long customerUid, final String moneyKey, final PromotionTargetDto promotionTarget, final boolean isTarget) {
-        if (moneyKey.isEmpty() || promotionTarget == null || promotionTarget.promotionCode().isEmpty() || promotionTarget.hashCi().isEmpty()) {
-            log.error("publishMoneyPromotionEvent 발행 실패. moneyKey: {}, promotionTarget: {} is null", moneyKey, promotionTarget);
+    private void publishPromotionEvent(final long customerUid, final String orderKey, final PromotionTargetDto promotionTarget, final boolean isTarget) {
+        if (orderKey.isEmpty() || promotionTarget == null || promotionTarget.promotionCode().isEmpty() || promotionTarget.hashCi().isEmpty()) {
+            log.error("publishOrderPromotionEvent 발행 실패. orderKey: {}, promotionTarget: {} is null", orderKey, promotionTarget);
             return;
         }
 
@@ -244,7 +244,7 @@ public class FOS_OrderServiceImpl extends OrderServiceBase implements FOS_OrderS
         PromotionEventDto eventDto = PromotionEventDto.builder()
             .source(this)
             .customerUid(customerUid)
-            .moneyKey(moneyKey)
+            .orderKey(orderKey)
             .payload(payload)
             .build();
 
@@ -252,7 +252,7 @@ public class FOS_OrderServiceImpl extends OrderServiceBase implements FOS_OrderS
             // TODO: outboxBusinessService 구현 필요
             eventPublisher.publishEvent(eventDto);
         }catch (Exception e) {
-            log.error("failed to save the outbox table for money promotion.", e);
+            log.error("failed to save the outbox table for order promotion.", e);
         }
     }
 
@@ -586,19 +586,19 @@ public class FOS_OrderServiceImpl extends OrderServiceBase implements FOS_OrderS
     // 내부 클래스 및 헬퍼 클래스들
     private static class OrderReserveDto {
         private final long customerUid;
-        private final String moneyKey;
+        private final String orderKey;
         private final String merchantCode;
         private final String merchantBrandCode;
         
-        public OrderReserveDto(long customerUid, String moneyKey, String merchantCode, String merchantBrandCode) {
+        public OrderReserveDto(long customerUid, String orderKey, String merchantCode, String merchantBrandCode) {
             this.customerUid = customerUid;
-            this.moneyKey = moneyKey;
+            this.orderKey = orderKey;
             this.merchantCode = merchantCode;
             this.merchantBrandCode = merchantBrandCode;
         }
         
         public long getCustomerUid() { return customerUid; }
-        public String getMoneyKey() { return moneyKey; }
+        public String getOrderKey() { return orderKey; }
         public String getMerchantCode() { return merchantCode; }
         public String getMerchantBrandCode() { return merchantBrandCode; }
     }
